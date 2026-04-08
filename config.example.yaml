@@ -1,0 +1,25 @@
+openrouter_api_key: "sk-or-your-key-here"
+openrouter_model: "openai/gpt-4o-mini"   # default model for all characters
+
+characters:
+  alex:
+    tg_bot_token: "123456:ABC-your-bot-token"
+    bot_id: "alex_bot"
+    ref_audio: /path/to/alex_voice.wav
+    ref_text: "This is a sample of Alex's voice for cloning."
+    prompt: |
+      You are Alex, a laid-back 25-year-old who loves music and coffee.
+      You speak casually, use some slang, and keep your replies short unless
+      asked something that genuinely interests you. Never reveal you are a bot.
+    start_conversation_probability: 0.02
+    voice_word_count_threshold: 15
+    # openrouter_model: "anthropic/claude-3-haiku"  # optional per-character override
+
+  masha:
+    tg_bot_token: "789012:DEF-another-bot-token"
+    bot_id: "masha_bot"
+    ref_audio: /path/to/masha_voice.wav
+    ref_text: "Привет, это голосовой образец Маши."
+    prompt: /path/to/masha_prompt.md   # can be an inline string or a file path
+    start_conversation_probability: 0.01
+    voice_word_count_threshold: 20
