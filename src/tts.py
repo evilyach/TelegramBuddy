@@ -13,7 +13,8 @@ class TTSService:
     """
     Wraps OmniVoice for voice cloning TTS.
 
-    The model is loaded once at process startup (it is heavy).
+    The underlying OmniVoice model is loaded once per device and shared
+    across all TTSService instances via a class-level cache.
     `synthesize` runs inference in a thread-pool executor to avoid
     blocking the aiogram event loop during generation.
 
@@ -23,14 +24,18 @@ class TTSService:
     breaks on torchaudio >= 2.9 (requires the missing torchcodec package).
     """
 
+    _model_cache: dict[str, OmniVoice] = {}
+
     def __init__(
         self, ref_audio: str, ref_text: str, device: str = "cpu", denoise: bool = True
     ):
         self._ref_text = ref_text
         self._generation_config = OmniVoiceGenerationConfig(denoise=denoise)
-        self._model = OmniVoice.from_pretrained(
-            "k2-fsa/OmniVoice", device_map=device, dtype=torch.float16
-        )
+        if device not in TTSService._model_cache:
+            TTSService._model_cache[device] = OmniVoice.from_pretrained(
+                "k2-fsa/OmniVoice", device_map=device, dtype=torch.float16
+            )
+        self._model = TTSService._model_cache[device]
 
         # Load reference audio with soundfile to avoid torchaudio.load / torchcodec
         audio_np, sr = sf.read(ref_audio, dtype="float32", always_2d=False)
