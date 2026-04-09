@@ -11,5 +11,4 @@ dependencies = [
     "omnivoice>=0.1.3",
     "pydantic-ai>=1.78.0",
     "pydantic-settings[yaml]>=2.13.0",
-    "torchaudio>=2.6.0",
 ]

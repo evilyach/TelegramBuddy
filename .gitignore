@@ -1,1 +1,7 @@
+.claude
+.venv
+*.db
 **/__pycache__
+config.yaml
+prompts/
+voices/

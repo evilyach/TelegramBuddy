@@ -1,10 +1,12 @@
 openrouter_api_key: "sk-or-your-key-here"
 openrouter_model: "openai/gpt-4o-mini"   # default model for all characters
+tts_device: "cpu"                         # "mps" for Mac (Apple Silicon), "cuda" for GPU server
 
 characters:
   alex:
     tg_bot_token: "123456:ABC-your-bot-token"
     bot_id: "alex_bot"
+    name: "Alex"           # display name used in chat; people mention this to trigger a reply
     ref_audio: /path/to/alex_voice.wav
     ref_text: "This is a sample of Alex's voice for cloning."
     prompt: |
@@ -18,6 +20,7 @@ characters:
   masha:
     tg_bot_token: "789012:DEF-another-bot-token"
     bot_id: "masha_bot"
+    name: "Маша"
     ref_audio: /path/to/masha_voice.wav
     ref_text: "Привет, это голосовой образец Маши."
     prompt: /path/to/masha_prompt.md   # can be an inline string or a file path

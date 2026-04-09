@@ -69,15 +69,37 @@ class MemoryManager:
         scoped_name = self._scoped(chat_id, person_name)
         return self._kg.query_entity(scoped_name)
 
+    def forget_fact(self, chat_id: int, subject: str, predicate: str, obj: str) -> None:
+        """Invalidate a previously stored fact."""
+        self._kg.invalidate(self._scoped(chat_id, subject), predicate, obj)
+
     # ------------------------------------------------------------------
     # Context block for LLM
     # ------------------------------------------------------------------
 
     def build_context_block(self, chat_id: int) -> str:
         history = self.get_recent_messages(chat_id)
-        lines = [f"{m.sender_name}: {m.text}" for m in history]
-
         parts = []
-        if lines:
+
+        if history:
+            lines = [f"{m.sender_name}: {m.text}" for m in history]
             parts.append("## Recent chat history\n" + "\n".join(lines))
+
+        # Include remembered facts for everyone who appeared in recent history.
+        # dict.fromkeys preserves insertion order and deduplicates.
+        seen_names = dict.fromkeys(m.sender_name for m in history)
+        fact_lines = []
+        for name in seen_names:
+            for fact in self.recall_facts(chat_id, name):
+                if fact.get("current", True):  # skip invalidated facts
+                    fact_lines.append(
+                        f"- {name} {fact['predicate']} {fact['object']}"
+                    )
+
+        if fact_lines:
+            parts.append(
+                "## What you remember about people in this chat\n"
+                + "\n".join(fact_lines)
+            )
+
         return "\n\n".join(parts)
