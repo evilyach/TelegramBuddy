@@ -2,10 +2,10 @@
 """
 Inspect the KnowledgeGraph memory for a character.
 
-Usage:
-    uv run python inspect_memory.py <character_name>
-    uv run python inspect_memory.py <character_name> --chat <chat_id>
-    uv run python inspect_memory.py <character_name> --person <name>
+Usage (run from project root):
+    uv run python scripts/inspect_memory.py <character_name>
+    uv run python scripts/inspect_memory.py <character_name> --chat <chat_id>
+    uv run python scripts/inspect_memory.py <character_name> --person <name>
 """
 
 import argparse
@@ -32,7 +32,6 @@ def cmd_stats(db_path: str) -> None:
         "SELECT DISTINCT predicate FROM triples ORDER BY predicate"
     ).fetchall()]
 
-    # Parse unique chat IDs from entity names like "-100123::Alice"
     names = [r[0] for r in conn.execute("SELECT name FROM entities").fetchall()]
     chats = sorted({n.split("::", 1)[0] for n in names if "::" in n})
 
@@ -76,7 +75,6 @@ def cmd_list(db_path: str, chat_id: str | None, person: str | None) -> None:
     current_chat = None
     current_subject = None
     for subject, predicate, obj, valid_from, valid_to in rows:
-        # subject is like "-100123456789::Alice"
         if "::" in subject:
             chat, display = subject.split("::", 1)
         else:
@@ -95,6 +93,32 @@ def cmd_list(db_path: str, chat_id: str | None, person: str | None) -> None:
         print(f"      {predicate}: {obj}  [{status}{since}]")
 
 
+def cmd_entries(char_name: str, db_path: str, limit: int = 100) -> None:
+    """Print up to `limit` current facts as readable one-liners."""
+    conn = _connect(db_path)
+    rows = conn.execute(
+        """
+        SELECT s.name, t.predicate, o.name
+        FROM triples t
+        JOIN entities s ON t.subject = s.id
+        JOIN entities o ON t.object = o.id
+        WHERE t.valid_to IS NULL
+        ORDER BY t.rowid DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        print("  (no facts)")
+        return
+
+    for subject, predicate, obj in rows:
+        person = subject.split("::", 1)[1] if "::" in subject else subject
+        print(f"  {char_name} knows: {person}  {predicate} → {obj}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inspect character memory")
     parser.add_argument("character", help="Character name (matches <character>_memory.db)")
@@ -109,7 +133,10 @@ def main() -> None:
     print("Stats:")
     cmd_stats(db_path)
 
-    print("\nFacts:")
+    print(f"\nEntries (up to 100 current facts):")
+    cmd_entries(args.character, db_path, limit=100)
+
+    print("\nAll facts (grouped):")
     cmd_list(db_path, args.chat, args.person)
     print()
 

@@ -17,6 +17,7 @@ class CharacterConfig(BaseModel):
     ref_text: str
     prompt: str  # inline text or path to a file
     answer_threshold: int = 6  # minimum intent score (0-10) to respond
+    react_threshold: int | None = None  # minimum score (0-10) to react with emoji; None = disabled
     voice_word_count_threshold: int = 15
     tts_denoise: bool = True
     openrouter_model: str | None = None
@@ -33,6 +34,7 @@ class CharacterConfig(BaseModel):
 class AppConfig(BaseSettings):
     openrouter_api_key: str
     openrouter_model: str = "openai/gpt-4o-mini"
+    stt_model: str = "openai/gpt-4o-audio-preview"
     tts_device: TTSDevice = "cpu"  # "mps" for Mac, "cuda" for GPU server
     characters: dict[str, CharacterConfig]
 

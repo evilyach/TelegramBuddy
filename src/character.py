@@ -1,15 +1,18 @@
 import asyncio
+import io
 import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ChatAction, ChatType
-from aiogram.types import FSInputFile, Message
+from aiogram.types import FSInputFile, Message, ReactionTypeEmoji
 
 from .config import AppConfig, CharacterConfig
 from .llm import LLMService
 from .memory import MemoryManager
+from .message_cache import MessageCache
+from .stt import STTService
 from .tts import TTSService
-from .utils import is_mentioned, word_count
+from .utils import bot_name_var, is_mentioned, word_count
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +28,13 @@ class CharacterBot:
         char_name: str,
         char_cfg: CharacterConfig,
         app_cfg: AppConfig,
+        message_cache: MessageCache,
     ):
         self._name = char_name
         self._cfg = char_cfg
         self._bot = Bot(token=char_cfg.tg_bot_token)
         self._dp = Dispatcher()
+        self._cache = message_cache
         self._memory = MemoryManager(char_name=char_name, db_path=f"{char_name}_memory.db")
         model_name = char_cfg.openrouter_model or app_cfg.openrouter_model
         self._llm = LLMService(
@@ -44,8 +49,13 @@ class CharacterBot:
             device=app_cfg.tts_device,
             denoise=char_cfg.tts_denoise,
         )
+        self._stt = STTService(
+            api_key=app_cfg.openrouter_api_key,
+            model=app_cfg.stt_model,
+        )
         self._bot_username: str = ""   # populated in run()
         self._bot_id: int = 0          # populated in run()
+        self._chat_locks: dict[int, asyncio.Lock] = {}
 
         self._register_handlers()
 
@@ -72,14 +82,106 @@ class CharacterBot:
             and reply.from_user.id == self._bot_id
         )
 
+    async def _download_image(self, message: Message) -> tuple[bytes, str] | None:
+        """Return (image_bytes, media_type) for photo or image document, or None."""
+        if message.photo:
+            # Telegram sends multiple sizes; take the largest one
+            photo = message.photo[-1]
+            buf = io.BytesIO()
+            await self._bot.download(photo.file_id, destination=buf)
+            return buf.getvalue(), "image/jpeg"
+        if message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+            buf = io.BytesIO()
+            await self._bot.download(message.document.file_id, destination=buf)
+            return buf.getvalue(), message.document.mime_type
+        return None
+
+    async def _try_react(self, message: Message, text: str, sender: str, chat_id: int) -> None:
+        """Check react intent and send emoji reaction if score meets threshold."""
+        try:
+            context = self._memory.build_context_block(chat_id)
+            score, emoji = await self._llm.check_react(text, sender, context)
+            threshold = self._cfg.react_threshold
+            if threshold is not None and score >= threshold:
+                logger.info(
+                    "[%s] [chat=%d] reacting with %s — react score %d/10 >= threshold %d",
+                    self._name, chat_id, emoji, score, threshold,
+                )
+                await message.react([ReactionTypeEmoji(emoji=emoji)])
+            else:
+                logger.debug(
+                    "[%s] [chat=%d] no reaction — react score %d/10 < threshold %d",
+                    self._name, chat_id, score, threshold,
+                )
+        except Exception as e:
+            logger.warning("[%s] [chat=%d] react check failed: %s", self._name, chat_id, e)
+
+    def _chat_lock(self, chat_id: int) -> asyncio.Lock:
+        if chat_id not in self._chat_locks:
+            self._chat_locks[chat_id] = asyncio.Lock()
+        return self._chat_locks[chat_id]
+
     async def _handle_message(self, message: Message) -> None:
-        if not message.text or not message.from_user:
+        if not message.from_user:
+            return
+
+        chat_id = message.chat.id
+        async with self._chat_lock(chat_id):
+            await self._process_message(message)
+
+    async def _process_message(self, message: Message) -> None:
+        assert message.from_user is not None  # guaranteed by _handle_message
+
+        image: bytes | None = None
+        image_media_type: str = "image/jpeg"
+
+        # Resolve text: prefer actual text, fall back to caption (for photos) or cached voice transcript
+        if message.text:
+            text = message.text
+        elif message.photo or (message.document and message.document.mime_type and message.document.mime_type.startswith("image/")):
+            text = message.caption or "[sent an image]"
+            img = await self._download_image(message)
+            if img:
+                image, image_media_type = img
+                logger.debug(
+                    "[%s] [chat=%d] received image (%s, %d bytes), caption: %s",
+                    self._name, message.chat.id, image_media_type, len(image), text[:80],
+                )
+        elif message.voice:
+            lock = self._cache.transcription_lock(message.chat.id, message.message_id)
+            async with lock:
+                text = self._cache.lookup(message.chat.id, message.message_id)
+                if text is None:
+                    logger.info(
+                        "[%s] [chat=%d] transcribing voice msg=%d via STT",
+                        self._name, message.chat.id, message.message_id,
+                    )
+                    try:
+                        buf = io.BytesIO()
+                        await self._bot.download(message.voice.file_id, destination=buf)
+                        text = await self._stt.transcribe(buf.getvalue())
+                        self._cache.store(message.chat.id, message.message_id, text)
+                        logger.info(
+                            "[%s] [chat=%d] transcribed voice msg=%d: %s",
+                            self._name, message.chat.id, message.message_id, text[:80],
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[%s] [chat=%d] STT failed for voice msg=%d: %s",
+                            self._name, message.chat.id, message.message_id, e,
+                        )
+                        return
+                else:
+                    logger.info(
+                        "[%s] [chat=%d] resolved voice msg=%d from cache: %s",
+                        self._name, message.chat.id, message.message_id, text[:80],
+                    )
+        else:
             return
 
         chat_id = message.chat.id
         chat_type = message.chat.type
         sender = message.from_user.full_name
-        text = message.text
         is_private = chat_type == ChatType.PRIVATE
 
         logger.debug(
@@ -89,6 +191,10 @@ class CharacterBot:
 
         # Always record the incoming message for context
         self._memory.add_message(chat_id, sender, text)
+
+        # Fire react check as a background task (independent of reply decision)
+        if self._cfg.react_threshold is not None:
+            asyncio.create_task(self._try_react(message, text, sender, chat_id))
 
         # Decide whether to reply
         if is_private:
@@ -122,7 +228,8 @@ class CharacterBot:
         typing_task = asyncio.create_task(self._keep_action(chat_id, ChatAction.TYPING))
         try:
             reply_text = await self._llm.generate_reply(
-                text, chat_id, self._memory, is_private=is_private
+                text, chat_id, self._memory, is_private=is_private,
+                image=image, image_media_type=image_media_type,
             )
         finally:
             typing_task.cancel()
@@ -142,8 +249,9 @@ class CharacterBot:
             finally:
                 recording_task.cancel()
             try:
-                await message.reply_voice(FSInputFile(audio_path))
-                logger.debug("[%s] [chat=%d] voice sent", self._name, chat_id)
+                sent = await message.reply_voice(FSInputFile(audio_path))
+                self._cache.store(sent.chat.id, sent.message_id, reply_text)
+                logger.debug("[%s] [chat=%d] voice sent (msg=%d cached)", self._name, chat_id, sent.message_id)
             finally:
                 audio_path.unlink(missing_ok=True)
         else:
@@ -153,7 +261,11 @@ class CharacterBot:
             )
             await message.reply(reply_text)
 
+    async def stop(self) -> None:
+        await self._dp.stop_polling()
+
     async def run(self) -> None:
+        bot_name_var.set(self._name)
         me = await self._bot.get_me()
         self._bot_username = me.username or ""
         self._bot_id = me.id

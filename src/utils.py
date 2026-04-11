@@ -1,4 +1,16 @@
+import logging
 import random
+from contextvars import ContextVar
+
+bot_name_var: ContextVar[str] = ContextVar("bot_name", default="-")
+
+
+class BotNameFilter(logging.Filter):
+    """Injects the current bot name into every log record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.bot_name = bot_name_var.get()
+        return True
 
 
 def word_count(text: str) -> int:

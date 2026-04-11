@@ -1,5 +1,6 @@
 openrouter_api_key: "sk-or-your-key-here"
 openrouter_model: "openai/gpt-4o-mini"   # default model for all characters
+stt_model: "openai/gpt-4o-audio-preview"    # audio-capable model for transcribing voice messages
 tts_device: "cpu"                         # "mps" for Mac (Apple Silicon), "cuda" for GPU server
 
 characters:
