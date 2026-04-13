@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from aiogram import Bot
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import BinaryContent
@@ -103,7 +104,8 @@ _BASE_PROMPT = """\
 - Подстраивайся под энергию разговора: если люди шутят — шути в ответ; 
 - если кто-то спрашивает что-то серьёзное — будь более вдумчивым.
 - Ты гость в чате — не доминируй в разговоре и не отвечай на всё подряд.
-- Если вы одну тему обсуждаете уже более 2 сообщений, не нужно уходить в бесконечный цикл. Стоит попытаться сменить тему, или вообще не отвечать.
+- Если вы обсуждаете одну тему уже более 2 сообщений подряд — не уходи в бесконечный цикл. Смени тему или вообще не отвечай.
+- Если последние несколько сообщений написаны другими ботами, а не живыми людьми — это сигнал завершить разговор. Не продолжай переписку ради переписки.
 
 Память:
 - Используй инструмент remember, чтобы сохранять устойчивые факты о людях: имена, работу, хобби, предпочтения, 
@@ -122,6 +124,7 @@ class BotContext:
     chat_id: int
     memory: MemoryManager
     recent_history: str
+    bot: Bot
     is_private: bool = False
 
 
@@ -149,6 +152,34 @@ def _remember(
         fact,
     )
     return f"Remembered: {subject} {predicate} {fact}"
+
+
+async def _get_chat_members(ctx: RunContext[BotContext]) -> str:
+    """Get a list of people currently in this group chat.
+
+    Returns names of members seen recently in chat history, plus admins
+    fetched from Telegram. Use this to know who is present before addressing
+    someone by name.
+    """
+    names: list[str] = []
+
+    # People seen in short-term history
+    recent = ctx.deps.memory.get_recent_messages(ctx.deps.chat_id)
+    seen = list(dict.fromkeys(m.sender_name for m in recent))
+    names.extend(seen)
+
+    # Admins from Telegram API (may include people not in recent history)
+    try:
+        admins = await ctx.deps.bot.get_chat_administrators(ctx.deps.chat_id)
+        for admin in admins:
+            if admin.user.full_name not in names:
+                names.append(admin.user.full_name)
+    except Exception:
+        pass
+
+    if not names:
+        return "No members found."
+    return "Chat members: " + ", ".join(names)
 
 
 def _forget(
@@ -201,6 +232,7 @@ class LLMService:
             tools=[
                 Tool(_remember, takes_ctx=True, name="remember"),
                 Tool(_forget, takes_ctx=True, name="forget"),
+                Tool(_get_chat_members, takes_ctx=True, name="get_chat_members"),
             ],
             model_settings=ModelSettings(temperature=0.8, max_tokens=1024),
             retries=3,
@@ -232,7 +264,9 @@ class LLMService:
     async def generate_reply(
         self,
         user_message: str,
+        sender: str,
         chat_id: int,
+        bot: Bot,
         memory: MemoryManager,
         is_private: bool = False,
         image: bytes | None = None,
@@ -243,15 +277,17 @@ class LLMService:
             chat_id=chat_id,
             memory=memory,
             recent_history=recent_history,
+            bot=bot,
             is_private=is_private,
         )
+        stamped = f"{sender}: {user_message}"
         if image is not None:
             prompt: str | list = [
                 BinaryContent(data=image, media_type=image_media_type),
-                user_message,
+                stamped,
             ]
         else:
-            prompt = user_message
+            prompt = stamped
         try:
             result = await self._agent.run(prompt, deps=bot_ctx)
         except UnexpectedModelBehavior as e:

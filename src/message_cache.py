@@ -36,7 +36,16 @@ class MessageCache:
         self._conn.execute(_CREATE_TABLE)
         self._conn.commit()
         self._transcription_locks: dict[tuple[int, int], asyncio.Lock] = {}
+        self._bot_streaks: dict[int, int] = {}  # chat_id -> consecutive bot message count
         logger.debug("MessageCache opened at %s", path.resolve())
+
+    def record_message(self, chat_id: int, is_bot: bool) -> int:
+        """Update the consecutive-bot-message streak and return the new value."""
+        if is_bot:
+            self._bot_streaks[chat_id] = self._bot_streaks.get(chat_id, 0) + 1
+        else:
+            self._bot_streaks[chat_id] = 0
+        return self._bot_streaks[chat_id]
 
     def transcription_lock(self, chat_id: int, message_id: int) -> asyncio.Lock:
         """Return a per-message lock so only one bot transcribes a given voice message."""

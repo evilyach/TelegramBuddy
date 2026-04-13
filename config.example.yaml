@@ -1,7 +1,12 @@
 openrouter_api_key: "sk-or-your-key-here"
 openrouter_model: "openai/gpt-4o-mini"   # default model for all characters
+stt_enabled: true                           # set to false to skip transcription of voice messages
+stt_user_blacklist: []                      # Telegram user IDs whose voice messages are never transcribed
 stt_model: "openai/gpt-4o-audio-preview"    # audio-capable model for transcribing voice messages
 tts_device: "cpu"                         # "mps" for Mac (Apple Silicon), "cuda" for GPU server
+runpod_api_key: ""                        # RunPod API key; leave empty to use local inference only
+runpod_tts_endpoint: ""                   # RunPod serverless endpoint ID for TTS; leave empty for local
+bot_consecutive_limit: 3                  # hard stop after this many consecutive bot messages in a chat
 
 characters:
   alex:

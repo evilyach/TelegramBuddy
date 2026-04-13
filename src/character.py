@@ -32,6 +32,7 @@ class CharacterBot:
     ):
         self._name = char_name
         self._cfg = char_cfg
+        self._app_cfg = app_cfg
         self._bot = Bot(token=char_cfg.tg_bot_token)
         self._dp = Dispatcher()
         self._cache = message_cache
@@ -48,6 +49,8 @@ class CharacterBot:
             ref_text=char_cfg.ref_text,
             device=app_cfg.tts_device,
             denoise=char_cfg.tts_denoise,
+            runpod_api_key=app_cfg.runpod_api_key,
+            runpod_endpoint_id=app_cfg.runpod_tts_endpoint,
         )
         self._stt = STTService(
             api_key=app_cfg.openrouter_api_key,
@@ -148,6 +151,14 @@ class CharacterBot:
                     self._name, message.chat.id, image_media_type, len(image), text[:80],
                 )
         elif message.voice:
+            if not self._app_cfg.stt_enabled:
+                return
+            if message.from_user.id in self._app_cfg.stt_user_blacklist:
+                logger.debug(
+                    "[%s] [chat=%d] skipping STT — user %d is blacklisted",
+                    self._name, message.chat.id, message.from_user.id,
+                )
+                return
             lock = self._cache.transcription_lock(message.chat.id, message.message_id)
             async with lock:
                 text = self._cache.lookup(message.chat.id, message.message_id)
@@ -182,6 +193,7 @@ class CharacterBot:
         chat_id = message.chat.id
         chat_type = message.chat.type
         sender = message.from_user.full_name
+        sender_is_bot = message.from_user.is_bot
         is_private = chat_type == ChatType.PRIVATE
 
         logger.debug(
@@ -191,6 +203,15 @@ class CharacterBot:
 
         # Always record the incoming message for context
         self._memory.add_message(chat_id, sender, text)
+        bot_streak = self._cache.record_message(chat_id, is_bot=sender_is_bot)
+
+        # Hard stop: too many consecutive bot messages — break the loop
+        if sender_is_bot and bot_streak >= self._app_cfg.bot_consecutive_limit:
+            logger.debug(
+                "[%s] [chat=%d] skipping — bot streak %d >= limit %d",
+                self._name, chat_id, bot_streak, self._app_cfg.bot_consecutive_limit,
+            )
+            return
 
         # Fire react check as a background task (independent of reply decision)
         if self._cfg.react_threshold is not None:
@@ -208,14 +229,15 @@ class CharacterBot:
             elif is_mentioned(text, [self._name, self._cfg.name], self._bot_username):
                 logger.debug("[%s] [chat=%d] responding (100%%) — name mention", self._name, chat_id)
             else:
-                # Tier 2 — LLM intent score + probability roll
+                # Tier 2 — LLM intent score; raise threshold when talking to another bot
                 context = self._memory.build_context_block(chat_id)
                 score = await self._llm.check_intent(text, sender, context)
-                threshold = self._cfg.answer_threshold
+                threshold = 9 if sender_is_bot else self._cfg.answer_threshold
                 if score < threshold:
                     logger.debug(
-                        "[%s] [chat=%d] skipping — intent score %d/10 < threshold %d",
+                        "[%s] [chat=%d] skipping — intent score %d/10 < threshold %d%s",
                         self._name, chat_id, score, threshold,
+                        " (bot sender)" if sender_is_bot else "",
                     )
                     return
                 logger.debug(
@@ -228,7 +250,8 @@ class CharacterBot:
         typing_task = asyncio.create_task(self._keep_action(chat_id, ChatAction.TYPING))
         try:
             reply_text = await self._llm.generate_reply(
-                text, chat_id, self._memory, is_private=is_private,
+                text, sender, chat_id, self._bot, self._memory,
+                is_private=is_private,
                 image=image, image_media_type=image_media_type,
             )
         finally:

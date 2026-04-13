@@ -34,8 +34,13 @@ class CharacterConfig(BaseModel):
 class AppConfig(BaseSettings):
     openrouter_api_key: str
     openrouter_model: str = "openai/gpt-4o-mini"
+    stt_enabled: bool = True
     stt_model: str = "openai/gpt-4o-audio-preview"
+    stt_user_blacklist: list[int] = []  # Telegram user IDs whose voice messages are never transcribed
     tts_device: TTSDevice = "cpu"  # "mps" for Mac, "cuda" for GPU server
+    runpod_api_key: str = ""
+    runpod_tts_endpoint: str = ""  # RunPod serverless endpoint ID; empty = local inference only
+    bot_consecutive_limit: int = 3  # hard stop after this many consecutive bot messages in a chat
     characters: dict[str, CharacterConfig]
 
     model_config = SettingsConfigDict(yaml_file="config.yaml")
